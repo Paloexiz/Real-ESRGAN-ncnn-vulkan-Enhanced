@@ -204,7 +204,7 @@ int RealESRGAN::load(const std::string& parampath, const std::string& modelpath)
     return 0;
 }
 
-int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
+int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage, int task_id) const
 {
     const unsigned char* pixeldata = (const unsigned char*)inimage.data;
     const int w = inimage.w;
@@ -550,7 +550,11 @@ int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
                 cmd.reset();
             }
 
-            fprintf(stderr, "%.2f%%\n", (float)(yi * xtiles + xi) / (ytiles * xtiles) * 100);
+            if (task_id != -1) {
+                fprintf(stderr, "[%d] %.2f%%\n", task_id, (float)(yi * xtiles + xi) / (ytiles * xtiles) * 100);
+            } else {
+                fprintf(stderr, "%.2f%%\n", (float)(yi * xtiles + xi) / (ytiles * xtiles) * 100);
+            }
         }
 
         // download

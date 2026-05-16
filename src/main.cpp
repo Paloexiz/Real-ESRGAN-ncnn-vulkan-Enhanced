@@ -326,7 +326,7 @@ void* proc(void* args)
         if (v.id == -233)
             break;
 
-        realesrgan->process(v.inimage, v.outimage);
+        realesrgan->process(v.inimage, v.outimage, v.id);
 
         tosave.put(v);
     }
