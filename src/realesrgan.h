@@ -10,6 +10,8 @@
 #include "gpu.h"
 #include "layer.h"
 
+typedef void (*ProgressCallback)(void* userdata, int task_id, float percent);
+
 class RealESRGAN
 {
 public:
@@ -22,7 +24,7 @@ public:
     int load(const std::string& parampath, const std::string& modelpath);
 #endif
 
-    int process(const ncnn::Mat& inimage, ncnn::Mat& outimage, int task_id = -1) const;
+    int process(const ncnn::Mat& inimage, ncnn::Mat& outimage, int task_id = -1, ProgressCallback progress_callback = 0, void* progress_userdata = 0) const;
 
 public:
     // realesrgan parameters

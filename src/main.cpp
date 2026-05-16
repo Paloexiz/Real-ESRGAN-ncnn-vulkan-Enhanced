@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <queue>
 #include <vector>
+#include <mutex>
 #include <clocale>
 #include <filesystem>
 namespace fs = std::filesystem;
@@ -180,6 +181,93 @@ private:
 TaskQueue toproc;
 TaskQueue tosave;
 
+class BatchProgress
+{
+public:
+    explicit BatchProgress(int total)
+        : total_(total), task_progress_(total, 0.f), task_completed_(total, false)
+    {
+    }
+
+    void emit_initial()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        emit_locked();
+    }
+
+    void update_task(int task_id, float percent)
+    {
+        if (task_id < 0 || task_id >= total_)
+            return;
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        const float clamped = std::max(0.f, std::min(percent, 99.f));
+        if (clamped <= task_progress_[task_id])
+            return;
+
+        task_progress_[task_id] = clamped;
+        emit_locked();
+    }
+
+    void complete_task(int task_id)
+    {
+        if (task_id < 0 || task_id >= total_)
+            return;
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!task_completed_[task_id])
+        {
+            task_completed_[task_id] = true;
+            completed_++;
+        }
+
+        task_progress_[task_id] = 100.f;
+        emit_locked();
+    }
+
+private:
+    void emit_locked() const
+    {
+        float sum = 0.f;
+        for (float progress : task_progress_)
+        {
+            sum += progress;
+        }
+
+        const float percent = total_ > 0 ? sum / total_ : 100.f;
+        const int current_task = current_task_locked();
+        const float current_percent = current_task >= 0 ? task_progress_[current_task] : 100.f;
+        fprintf(stderr, "@batch total=%d completed=%d percent=%.2f current=%d current_percent=%.2f\n",
+            total_, completed_, percent, current_task, current_percent);
+    }
+
+    int current_task_locked() const
+    {
+        for (int i = 0; i < total_; i++)
+        {
+            if (!task_completed_[i])
+                return i;
+        }
+
+        return -1;
+    }
+
+    int total_;
+    int completed_ = 0;
+    std::vector<float> task_progress_;
+    std::vector<bool> task_completed_;
+    std::mutex mutex_;
+};
+
+static void on_task_progress(void* userdata, int task_id, float percent)
+{
+    BatchProgress* progress = (BatchProgress*)userdata;
+    if (progress)
+    {
+        progress->update_task(task_id, percent);
+    }
+}
+
 class LoadThreadParams
 {
 public:
@@ -310,6 +398,7 @@ class ProcThreadParams
 {
 public:
     const RealESRGAN* realesrgan;
+    BatchProgress* progress;
 };
 
 void* proc(void* args)
@@ -326,7 +415,7 @@ void* proc(void* args)
         if (v.id == -233)
             break;
 
-        realesrgan->process(v.inimage, v.outimage, v.id);
+        realesrgan->process(v.inimage, v.outimage, v.id, on_task_progress, ptp->progress);
 
         tosave.put(v);
     }
@@ -338,6 +427,7 @@ class SaveThreadParams
 {
 public:
     int verbose;
+    BatchProgress* progress;
 };
 
 void* save(void* args)
@@ -405,6 +495,9 @@ void* save(void* args)
         }
         if (success)
         {
+            // 100% means the file is fully persisted, not merely processed on the GPU.
+            stp->progress->complete_task(v.id);
+
             if (verbose)
             {
 #if _WIN32
@@ -810,6 +903,9 @@ int main(int argc, char** argv)
 
         // main routine
         {
+            BatchProgress batch_progress((int)input_files.size());
+            batch_progress.emit_initial();
+
             // load image
             LoadThreadParams ltp;
             ltp.scale = scale;
@@ -824,6 +920,7 @@ int main(int argc, char** argv)
             for (int i=0; i<use_gpu_count; i++)
             {
                 ptp[i].realesrgan = realesrgan[i];
+                ptp[i].progress = &batch_progress;
             }
 
             std::vector<ncnn::Thread*> proc_threads(total_jobs_proc);
@@ -841,6 +938,7 @@ int main(int argc, char** argv)
             // save image
             SaveThreadParams stp;
             stp.verbose = verbose;
+            stp.progress = &batch_progress;
 
             std::vector<ncnn::Thread*> save_threads(jobs_save);
             for (int i=0; i<jobs_save; i++)
