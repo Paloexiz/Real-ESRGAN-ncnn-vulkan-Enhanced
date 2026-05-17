@@ -137,7 +137,8 @@ static path_t get_executable_directory()
 static bool filepath_is_readable(const path_t& path)
 {
 #if _WIN32
-    FILE* fp = _wfopen(path.c_str(), L"rb");
+    FILE* fp = 0;
+    _wfopen_s(&fp, path.c_str(), L"rb");
 #else // _WIN32
     FILE* fp = fopen(path.c_str(), "rb");
 #endif // _WIN32

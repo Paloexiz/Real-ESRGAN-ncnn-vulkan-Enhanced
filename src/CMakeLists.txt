@@ -1,5 +1,15 @@
-cmake_policy(SET CMP0091 NEW)
-set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
+cmake_minimum_required(VERSION 3.10)
+
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+    set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
+endif()
+
+if(POLICY CMP0069)
+    cmake_policy(SET CMP0069 NEW)
+    set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+endif()
+
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # -------------- Support C++17 for using filesystem  ------------------#
@@ -14,9 +24,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++")
 
-project(realesrgan-ncnn-vulkan)
-
-cmake_minimum_required(VERSION 3.9)
+project(realesrgan-ncnn-vulkan LANGUAGES C CXX)
 
 set(CMAKE_BUILD_TYPE Release)
 
@@ -87,8 +95,6 @@ if(OPENMP_FOUND)
 endif()
 
 # enable global link time optimization
-cmake_policy(SET CMP0069 NEW)
-set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ipo_supported OUTPUT ipo_supported_output)
 if(ipo_supported)
@@ -228,6 +234,20 @@ if(NOT USE_SYSTEM_NCNN)
     option(WITH_LAYER_softplus "" OFF)
 
     add_subdirectory(ncnn)
+
+    if(MSVC AND TARGET ncnn)
+        foreach(ncnn_invalid_msvc_option IN ITEMS -fno-rtti -fno-exceptions)
+            foreach(ncnn_property IN ITEMS COMPILE_OPTIONS INTERFACE_COMPILE_OPTIONS)
+                get_target_property(ncnn_compile_options ncnn ${ncnn_property})
+                if(ncnn_compile_options)
+                    list(REMOVE_ITEM ncnn_compile_options "${ncnn_invalid_msvc_option}")
+                    set_target_properties(ncnn PROPERTIES ${ncnn_property} "${ncnn_compile_options}")
+                endif()
+            endforeach()
+        endforeach()
+
+        target_compile_options(ncnn PRIVATE /GR- /wd4244 /wd4267 /wd4313 /wd4477 /wd4996)
+    endif()
 endif()
 
 if(USE_SYSTEM_WEBP)
@@ -306,5 +326,9 @@ if(OPENMP_FOUND)
     list(APPEND REALESRGAN_LINK_LIBRARIES ${OpenMP_CXX_LIBRARIES})
 endif()
 
-target_link_libraries(realesrgan-ncnn-vulkan ${REALESRGAN_LINK_LIBRARIES} -static-libstdc++)
+if(MSVC)
+    target_link_libraries(realesrgan-ncnn-vulkan ${REALESRGAN_LINK_LIBRARIES})
+else()
+    target_link_libraries(realesrgan-ncnn-vulkan ${REALESRGAN_LINK_LIBRARIES} -static-libstdc++)
+endif()
 

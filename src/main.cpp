@@ -282,7 +282,7 @@ public:
 void* load(void* args)
 {
     const LoadThreadParams* ltp = (const LoadThreadParams*)args;
-    const int count = ltp->input_files.size();
+    const int count = (int)ltp->input_files.size();
     const int scale = ltp->scale;
 
     #pragma omp parallel for schedule(static,1) num_threads(ltp->jobs_load)
@@ -298,7 +298,8 @@ void* load(void* args)
         int c;
 
 #if _WIN32
-        FILE* fp = _wfopen(imagepath.c_str(), L"rb");
+        FILE* fp = 0;
+        _wfopen_s(&fp, imagepath.c_str(), L"rb");
 #else
         FILE* fp = fopen(imagepath.c_str(), "rb");
 #endif
@@ -570,7 +571,7 @@ int main(int argc, char** argv)
             gpuid = parse_optarg_int_array(optarg);
             break;
         case L'j':
-            swscanf(optarg, L"%d:%*[^:]:%d", &jobs_load, &jobs_save);
+            swscanf_s(optarg, L"%d:%*[^:]:%d", &jobs_load, &jobs_save);
             jobs_proc = parse_optarg_int_array(wcschr(optarg, L':') + 1);
             break;
         case L'f':
@@ -719,7 +720,7 @@ int main(int argc, char** argv)
             if (lr != 0)
                 return -1;
 
-            const int count = filenames.size();
+            const int count = (int)filenames.size();
             input_files.resize(count);
             output_files.resize(count);
 

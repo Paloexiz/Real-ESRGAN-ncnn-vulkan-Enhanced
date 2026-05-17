@@ -85,7 +85,7 @@ int webp_save(const char* filepath, int w, int h, int c, const unsigned char* pi
         goto RETURN;
 
 #if _WIN32
-    fp = _wfopen(filepath, L"wb");
+    _wfopen_s(&fp, filepath, L"wb");
 #else
     fp = fopen(filepath, "wb");
 #endif

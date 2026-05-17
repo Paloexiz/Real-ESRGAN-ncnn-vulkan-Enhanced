@@ -88,10 +88,12 @@ int RealESRGAN::load(const std::string& parampath, const std::string& modelpath)
 {
 #if _WIN32
     {
-        FILE* fp = _wfopen(parampath.c_str(), L"rb");
+        FILE* fp = 0;
+        _wfopen_s(&fp, parampath.c_str(), L"rb");
         if (!fp)
         {
             fwprintf(stderr, L"_wfopen %ls failed\n", parampath.c_str());
+            return -1;
         }
 
         net.load_param(fp);
@@ -99,10 +101,12 @@ int RealESRGAN::load(const std::string& parampath, const std::string& modelpath)
         fclose(fp);
     }
     {
-        FILE* fp = _wfopen(modelpath.c_str(), L"rb");
+        FILE* fp = 0;
+        _wfopen_s(&fp, modelpath.c_str(), L"rb");
         if (!fp)
         {
             fwprintf(stderr, L"_wfopen %ls failed\n", modelpath.c_str());
+            return -1;
         }
 
         net.load_model(fp);
@@ -333,10 +337,10 @@ int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage, int task_
                     std::vector<ncnn::vk_constant_type> constants(13);
                     constants[0].i = in_gpu.w;
                     constants[1].i = in_gpu.h;
-                    constants[2].i = in_gpu.cstep;
+                    constants[2].i = (int)in_gpu.cstep;
                     constants[3].i = in_tile_gpu[0].w;
                     constants[4].i = in_tile_gpu[0].h;
-                    constants[5].i = in_tile_gpu[0].cstep;
+                    constants[5].i = (int)in_tile_gpu[0].cstep;
                     constants[6].i = prepadding;
                     constants[7].i = prepadding;
                     constants[8].i = xi * TILE_SIZE_X;
@@ -411,10 +415,10 @@ int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage, int task_
                     std::vector<ncnn::vk_constant_type> constants(13);
                     constants[0].i = out_tile_gpu[0].w;
                     constants[1].i = out_tile_gpu[0].h;
-                    constants[2].i = out_tile_gpu[0].cstep;
+                    constants[2].i = (int)out_tile_gpu[0].cstep;
                     constants[3].i = out_gpu.w;
                     constants[4].i = out_gpu.h;
-                    constants[5].i = out_gpu.cstep;
+                    constants[5].i = (int)out_gpu.cstep;
                     constants[6].i = xi * TILE_SIZE_X * scale;
                     constants[7].i = std::min(TILE_SIZE_X * scale, out_gpu.w - xi * TILE_SIZE_X * scale);
                     constants[8].i = prepadding * scale;
@@ -458,10 +462,10 @@ int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage, int task_
                     std::vector<ncnn::vk_constant_type> constants(13);
                     constants[0].i = in_gpu.w;
                     constants[1].i = in_gpu.h;
-                    constants[2].i = in_gpu.cstep;
+                    constants[2].i = (int)in_gpu.cstep;
                     constants[3].i = in_tile_gpu.w;
                     constants[4].i = in_tile_gpu.h;
-                    constants[5].i = in_tile_gpu.cstep;
+                    constants[5].i = (int)in_tile_gpu.cstep;
                     constants[6].i = prepadding;
                     constants[7].i = prepadding;
                     constants[8].i = xi * TILE_SIZE_X;
@@ -523,10 +527,10 @@ int RealESRGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage, int task_
                     std::vector<ncnn::vk_constant_type> constants(13);
                     constants[0].i = out_tile_gpu.w;
                     constants[1].i = out_tile_gpu.h;
-                    constants[2].i = out_tile_gpu.cstep;
+                    constants[2].i = (int)out_tile_gpu.cstep;
                     constants[3].i = out_gpu.w;
                     constants[4].i = out_gpu.h;
-                    constants[5].i = out_gpu.cstep;
+                    constants[5].i = (int)out_gpu.cstep;
                     constants[6].i = xi * TILE_SIZE_X * scale;
                     constants[7].i = std::min(TILE_SIZE_X * scale, out_gpu.w - xi * TILE_SIZE_X * scale);
                     constants[8].i = prepadding * scale;
