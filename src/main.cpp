@@ -5,6 +5,7 @@
 #include <queue>
 #include <vector>
 #include <mutex>
+#include <cmath>
 #include <clocale>
 #include <filesystem>
 namespace fs = std::filesystem;
@@ -108,7 +109,7 @@ static void print_usage()
     fprintf(stderr, "  -h                   show this help\n");
     fprintf(stderr, "  -i input-path        input image path (jpg/png/webp) or directory\n");
     fprintf(stderr, "  -o output-path       output image path (jpg/png/webp) or directory\n");
-    fprintf(stderr, "  -s scale             upscale ratio (can be 2, 3, 4. default=4)\n");
+    fprintf(stderr, "  -s scale             output upscale ratio (can be 2, 3, 4. default=model native scale)\n");
     fprintf(stderr, "  -t tile-size         tile size (>=32/0=auto, default=0) can be 0,0,0 for multi-gpu\n");
     fprintf(stderr, "  -m model-path        folder path to the pre-trained models. default=models\n");
     fprintf(stderr, "  -n model-name        model name (default=realesr-animevideov3, can be realesr-animevideov3 | realesrgan-x4plus | realesrgan-x4plus-anime | realesrnet-x4plus)\n");
@@ -180,6 +181,104 @@ private:
 
 TaskQueue toproc;
 TaskQueue tosave;
+
+static bool is_supported_scale(int scale)
+{
+    return scale == 2 || scale == 3 || scale == 4;
+}
+
+static int native_model_scale(const path_t& modelname, int requested_scale)
+{
+    if (modelname == PATHSTR("realesr-animevideov3"))
+        return requested_scale != 0 ? requested_scale : 4;
+
+    if (modelname == PATHSTR("realesr-animevideov3-x2"))
+        return 2;
+
+    if (modelname == PATHSTR("realesr-animevideov3-x3"))
+        return 3;
+
+    return 4;
+}
+
+static float cubic_weight(float x)
+{
+    x = std::fabs(x);
+
+    if (x <= 1.f)
+        return (1.5f * x - 2.5f) * x * x + 1.f;
+
+    if (x < 2.f)
+        return ((-0.5f * x + 2.5f) * x - 4.f) * x + 2.f;
+
+    return 0.f;
+}
+
+static unsigned char saturate_cast_uchar(float value)
+{
+    if (value <= 0.f)
+        return 0;
+
+    if (value >= 255.f)
+        return 255;
+
+    return (unsigned char)(value + 0.5f);
+}
+
+static ncnn::Mat resize_bicubic(const ncnn::Mat& src, int target_w, int target_h)
+{
+    const int channels = src.elempack;
+
+    if (src.w == target_w && src.h == target_h)
+        return src;
+
+    ncnn::Mat dst(target_w, target_h, (size_t)channels, channels);
+    const unsigned char* src_pixels = (const unsigned char*)src.data;
+    unsigned char* dst_pixels = (unsigned char*)dst.data;
+
+    const float scale_x = (float)src.w / target_w;
+    const float scale_y = (float)src.h / target_h;
+
+    for (int y = 0; y < target_h; y++)
+    {
+        const float src_y = (y + 0.5f) * scale_y - 0.5f;
+        const int y_int = (int)std::floor(src_y);
+
+        for (int x = 0; x < target_w; x++)
+        {
+            const float src_x = (x + 0.5f) * scale_x - 0.5f;
+            const int x_int = (int)std::floor(src_x);
+
+            for (int c = 0; c < channels; c++)
+            {
+                float sum = 0.f;
+                float weight_sum = 0.f;
+
+                for (int ky = -1; ky <= 2; ky++)
+                {
+                    const int sample_y = std::max(0, std::min(src.h - 1, y_int + ky));
+                    const float wy = cubic_weight(src_y - (y_int + ky));
+
+                    for (int kx = -1; kx <= 2; kx++)
+                    {
+                        const int sample_x = std::max(0, std::min(src.w - 1, x_int + kx));
+                        const float wx = cubic_weight(src_x - (x_int + kx));
+                        const float weight = wx * wy;
+                        const size_t src_index = ((size_t)sample_y * src.w + sample_x) * channels + c;
+
+                        sum += src_pixels[src_index] * weight;
+                        weight_sum += weight;
+                    }
+                }
+
+                const size_t dst_index = ((size_t)y * target_w + x) * channels + c;
+                dst_pixels[dst_index] = saturate_cast_uchar(weight_sum != 0.f ? sum / weight_sum : 0.f);
+            }
+        }
+    }
+
+    return dst;
+}
 
 class BatchProgress
 {
@@ -271,7 +370,7 @@ static void on_task_progress(void* userdata, int task_id, float percent)
 class LoadThreadParams
 {
 public:
-    int scale;
+    int model_scale;
     int jobs_load;
 
     // session data
@@ -283,7 +382,7 @@ void* load(void* args)
 {
     const LoadThreadParams* ltp = (const LoadThreadParams*)args;
     const int count = (int)ltp->input_files.size();
-    const int scale = ltp->scale;
+    const int model_scale = ltp->model_scale;
 
     #pragma omp parallel for schedule(static,1) num_threads(ltp->jobs_load)
     for (int i=0; i<count; i++)
@@ -366,7 +465,7 @@ void* load(void* args)
             v.outpath = ltp->output_files[i];
 
             v.inimage = ncnn::Mat(w, h, (void*)pixeldata, (size_t)c, c);
-            v.outimage = ncnn::Mat(w * scale, h * scale, (size_t)c, c);
+            v.outimage = ncnn::Mat(w * model_scale, h * model_scale, (size_t)c, c);
 
             path_t ext = get_file_extension(v.outpath);
             if (c == 4 && (ext == PATHSTR("jpg") || ext == PATHSTR("JPG") || ext == PATHSTR("jpeg") || ext == PATHSTR("JPEG")))
@@ -428,6 +527,7 @@ class SaveThreadParams
 {
 public:
     int verbose;
+    int output_scale;
     BatchProgress* progress;
 };
 
@@ -463,6 +563,14 @@ void* save(void* args)
         }
 
         int success = 0;
+        ncnn::Mat output_image = v.outimage;
+
+        if (stp->output_scale != 0)
+        {
+            const int target_w = v.inimage.w * stp->output_scale;
+            const int target_h = v.inimage.h * stp->output_scale;
+            output_image = resize_bicubic(v.outimage, target_w, target_h);
+        }
 
         path_t ext = get_file_extension(v.outpath);
 
@@ -476,22 +584,22 @@ void* save(void* args)
 
         if (ext == PATHSTR("webp") || ext == PATHSTR("WEBP"))
         {
-            success = webp_save(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, (const unsigned char*)v.outimage.data);
+            success = webp_save(v.outpath.c_str(), output_image.w, output_image.h, output_image.elempack, (const unsigned char*)output_image.data);
         }
         else if (ext == PATHSTR("png") || ext == PATHSTR("PNG"))
         {
 #if _WIN32
-            success = wic_encode_image(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, v.outimage.data);
+            success = wic_encode_image(v.outpath.c_str(), output_image.w, output_image.h, output_image.elempack, output_image.data);
 #else
-            success = stbi_write_png(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, v.outimage.data, 0);
+            success = stbi_write_png(v.outpath.c_str(), output_image.w, output_image.h, output_image.elempack, output_image.data, 0);
 #endif
         }
         else if (ext == PATHSTR("jpg") || ext == PATHSTR("JPG") || ext == PATHSTR("jpeg") || ext == PATHSTR("JPEG"))
         {
 #if _WIN32
-            success = wic_encode_jpeg_image(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, v.outimage.data);
+            success = wic_encode_jpeg_image(v.outpath.c_str(), output_image.w, output_image.h, output_image.elempack, output_image.data);
 #else
-            success = stbi_write_jpg(v.outpath.c_str(), v.outimage.w, v.outimage.h, v.outimage.elempack, v.outimage.data, 100);
+            success = stbi_write_jpg(v.outpath.c_str(), output_image.w, output_image.h, output_image.elempack, output_image.data, 100);
 #endif
         }
         if (success)
@@ -530,7 +638,7 @@ int main(int argc, char** argv)
 {
     path_t inputpath;
     path_t outputpath;
-    int scale = 4;
+    int output_scale = 0;
     std::vector<int> tilesize;
     path_t model = PATHSTR("models");
     path_t modelname = PATHSTR("realesr-animevideov3");
@@ -556,7 +664,7 @@ int main(int argc, char** argv)
             outputpath = optarg;
             break;
         case L's':
-            scale = _wtoi(optarg);
+            output_scale = _wtoi(optarg);
             break;
         case L't':
             tilesize = parse_optarg_int_array(optarg);
@@ -602,7 +710,7 @@ int main(int argc, char** argv)
             outputpath = optarg;
             break;
         case 's':
-            scale = atoi(optarg);
+            output_scale = atoi(optarg);
             break;
         case 't':
             tilesize = parse_optarg_int_array(optarg);
@@ -641,6 +749,24 @@ int main(int argc, char** argv)
     {
         print_usage();
         return -1;
+    }
+
+    if (output_scale != 0 && !is_supported_scale(output_scale))
+    {
+        fprintf(stderr, "invalid scale argument\n");
+        return -1;
+    }
+
+    const int model_scale = native_model_scale(modelname, output_scale);
+    if (!is_supported_scale(model_scale))
+    {
+        fprintf(stderr, "invalid model scale\n");
+        return -1;
+    }
+
+    if (output_scale == 0)
+    {
+        output_scale = model_scale;
     }
 
     if (tilesize.size() != (gpuid.empty() ? 1 : gpuid.size()) && !tilesize.empty())
@@ -794,7 +920,7 @@ int main(int argc, char** argv)
 
     if (modelname == PATHSTR("realesr-animevideov3"))
     {
-        const std::wstring scale_string = std::to_wstring(scale);
+        const std::wstring scale_string = std::to_wstring(model_scale);
         swprintf(parampath, 256, L"%s/%s-x%s.param", model.c_str(), modelname.c_str(), scale_string.c_str());
         swprintf(modelpath, 256, L"%s/%s-x%s.bin", model.c_str(), modelname.c_str(), scale_string.c_str());
     }
@@ -809,8 +935,8 @@ int main(int argc, char** argv)
 
     if (modelname == PATHSTR("realesr-animevideov3"))
     {
-        sprintf(parampath, "%s/%s-x%s.param", model.c_str(), modelname.c_str(), std::to_string(scale).c_str());
-        sprintf(modelpath, "%s/%s-x%s.bin", model.c_str(), modelname.c_str(), std::to_string(scale).c_str());
+        sprintf(parampath, "%s/%s-x%s.param", model.c_str(), modelname.c_str(), std::to_string(model_scale).c_str());
+        sprintf(modelpath, "%s/%s-x%s.bin", model.c_str(), modelname.c_str(), std::to_string(model_scale).c_str());
     }
     else{
         sprintf(parampath, "%s/%s.param", model.c_str(), modelname.c_str());
@@ -898,7 +1024,7 @@ int main(int argc, char** argv)
 
             realesrgan[i]->load(paramfullpath, modelfullpath);
 
-            realesrgan[i]->scale = scale;
+            realesrgan[i]->scale = model_scale;
             realesrgan[i]->tilesize = tilesize[i];
             realesrgan[i]->prepadding = prepadding;
         }
@@ -910,7 +1036,7 @@ int main(int argc, char** argv)
 
             // load image
             LoadThreadParams ltp;
-            ltp.scale = scale;
+            ltp.model_scale = model_scale;
             ltp.jobs_load = jobs_load;
             ltp.input_files = input_files;
             ltp.output_files = output_files;
@@ -940,6 +1066,7 @@ int main(int argc, char** argv)
             // save image
             SaveThreadParams stp;
             stp.verbose = verbose;
+            stp.output_scale = output_scale;
             stp.progress = &batch_progress;
 
             std::vector<ncnn::Thread*> save_threads(jobs_save);
